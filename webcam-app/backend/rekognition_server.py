@@ -1,40 +1,47 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body
+from typing import List, Dict
 import boto3
 import os
+import json
 
 app = FastAPI()
 
-# AWS Rekognition Client
-rekognition = boto3.client('rekognition', region_name='us-east-1')
+MODEL_ARN = "arn:aws:rekognition:us-east-1:139008108936:project/demo/version/demo.2025-02-25T00.12.52/1740460372695"
+MIN_CONFIDENCE = 95
+IMAGE_DIR = "../public/images/"
 
-@app.post("/process-image")
-async def process_image(data: dict):
-    image_path = data.get("image_path")
-    if not image_path:
+client = boto3.client("rekognition")
+
+@app.post("/api/send-to-rekognition")
+async def send_to_rekognition(data: Dict[str, List[str]] = Body(...)):
+    """Processes provided images using AWS Rekognition."""
+    print("🟢 Received request data:", json.dumps(data, indent=2))  # Log request
+
+    if "images" not in data or not data["images"]:
         raise HTTPException(status_code=400, detail="No image path provided")
 
-    try:
-        print(f"🔹 Received image path: {image_path}")
+    results = []
+    for image_data_url in data["images"]:
+        image_filename = image_data_url.split("/")[-1]  # Extract filename
+        image_path = os.path.join(IMAGE_DIR, image_filename)
 
-        # Ensure path is correct
-        image_full_path = f"../public{image_path}"
-        if not os.path.exists(image_full_path):
-            print("❌ Image file not found:", image_full_path)
-            raise HTTPException(status_code=404, detail="Image file not found")
+        if not os.path.exists(image_path):
+            print(f"⚠️ Skipping {image_filename}, file not found.")
+            continue
 
-        # Read image as bytes
-        with open(image_full_path, "rb") as image_file:
+        with open(image_path, "rb") as image_file:
             image_bytes = image_file.read()
 
-        # Call AWS Rekognition
-        response = rekognition.detect_labels(
+        response = client.detect_custom_labels(
             Image={"Bytes": image_bytes},
-            MaxLabels=5
+            MinConfidence=MIN_CONFIDENCE,
+            ProjectVersionArn=MODEL_ARN,
         )
 
-        print("✅ Rekognition Response:", response)
-        return {"labels": response["Labels"]}
+        labels = [{"Label": label["Name"], "Confidence": label["Confidence"]} for label in response["CustomLabels"]]
+        results.append({"image": image_filename, "labels": labels})
 
-    except Exception as e:
-        print("❌ Error processing image:", str(e))
-        raise HTTPException(status_code=500, detail="AWS Rekognition processing failed")
+    if not results:
+        raise HTTPException(status_code=404, detail="No images successfully processed.")
+
+    return {"results": results}

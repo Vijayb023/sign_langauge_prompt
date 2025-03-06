@@ -6,17 +6,22 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [images, setImages] = useState<string[]>([]);
-  const [latestImagePath, setLatestImagePath] = useState<string | null>(null);
+  const [capturedImages, setCapturedImages] = useState<string[]>([]);
+  const [rekognitionResult, setRekognitionResult] = useState<any>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string>("STOPPED");
 
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null;
 
     if (isStreaming) {
+      clearImagesFolder();
       enableWebcam();
-      interval = setInterval(() => captureImage(), 5000); // Auto capture every 5 seconds
+      startRekognitionModel(); // ✅ Automatically start the model when webcam starts
+      interval = setInterval(() => captureImage(), 5000);
     } else {
       stopWebcam();
+      stopRekognitionModel(); // ✅ Automatically stop the model when webcam stops
       if (interval) clearInterval(interval);
     }
 
@@ -25,14 +30,27 @@ export default function Home() {
     };
   }, [isStreaming]);
 
-  const enableWebcam = async () => {
+  const clearImagesFolder = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
+      await fetch('/api/clear-images');
+      setCapturedImages([]);
     } catch (error) {
-      console.error('Error accessing webcam:', error);
+      console.error('❌ Error clearing images folder:', error);
+    }
+  };
+
+  const enableWebcam = async () => {
+    if (!videoRef.current) {
+        console.error("❌ Video reference not found!");
+        return;
+    }
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        videoRef.current.srcObject = stream;
+        console.log("✅ Webcam enabled successfully!");
+    } catch (error) {
+        console.error("❌ Error accessing webcam:", error);
     }
   };
 
@@ -55,12 +73,9 @@ export default function Home() {
       ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
       const imageDataUrl = canvas.toDataURL('image/png');
 
-      // Save to state
-      setImages((prevImages) => [imageDataUrl, ...prevImages]);
+      setCapturedImages((prevImages) => [imageDataUrl, ...prevImages]);
 
-      // Save to server and get image path
-      const imagePath = await saveImageToServer(imageDataUrl);
-      if (imagePath) setLatestImagePath(imagePath);
+      await saveImageToServer(imageDataUrl);
     }
   };
 
@@ -80,35 +95,94 @@ export default function Home() {
     }
   };
 
-  const sendToRekognition = async () => {
-    if (!latestImagePath) return;
+  const sendToRekognition = async (imagePath: string) => {
+    if (!imagePath) {
+      console.error("❌ No image path set!");
+      return;
+    }
+
+    console.log("📸 Sending image to API:", imagePath);
 
     try {
-      const response = await fetch('/api/send-to-rekognition', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imagePath: latestImagePath }),
+      const response = await fetch("/api/send-to-rekognition", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imagePath }),
       });
 
-      const result = await response.json();
-      console.log('AWS Rekognition Result:', result);
-      alert(`Rekognition Response: ${JSON.stringify(result)}`);
+      const data = await response.json();
+      console.log("📡 Data from API:", data);
     } catch (error) {
-      console.error('Error sending to AWS Rekognition:', error);
+      console.error("❌ Error sending to AWS Rekognition:", error);
+    }
+  };
+
+  const startRekognitionModel = async () => {
+    try {
+        const response = await fetch("http://localhost:8000/start-model", {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
+        });
+
+        if (!response.ok) {
+            throw new Error("Failed to start Rekognition model");
+        }
+
+        const data = await response.json();
+        console.log("📡 Rekognition Model Started:", data);
+        setModelStatus("RUNNING");
+    } catch (error) {
+        console.error("❌ Error starting model:", error);
+    }
+  };
+
+  const stopRekognitionModel = async () => {
+    try {
+      const response = await fetch("http://localhost:8000/stop-model", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to stop Rekognition model");
+      }
+
+      const data = await response.json();
+      console.log("🚫 Model Stop Response:", data.message);
+      setModelStatus("STOPPED");
+    } catch (error) {
+      console.error("❌ Error stopping model:", error);
     }
   };
 
   return (
-    <div className="container text-center py-5">
-      <h1 className="mb-4">Webcam Capture App</h1>
+    <div className="container py-5">
+      <h1 className="mb-4 text-center">Webcam Capture App</h1>
 
-      <div className="mb-3">
-        <button className={`btn ${isStreaming ? 'btn-danger' : 'btn-primary'}`} onClick={() => setIsStreaming(!isStreaming)}>
+      <div className="text-center">
+        <button className={`btn ${isStreaming ? 'btn-danger' : 'btn-primary'} me-2`} 
+          onClick={() => setIsStreaming(!isStreaming)}>
           {isStreaming ? 'Stop Webcam' : 'Start Webcam'}
         </button>
+
+        {!isStreaming && (
+          <button className="btn btn-success me-2" onClick={startRekognitionModel}>Start Model</button>
+        )}
+
+        {!isStreaming && (
+          <button className="btn btn-warning me-2" onClick={stopRekognitionModel}>Stop Model</button>
+        )}
+
+        {!isStreaming && capturedImages.length > 0 && (
+          <button className="btn btn-info me-2" onClick={() => sendToRekognition(capturedImages[0])}>
+            Generate Image
+          </button>
+        )}
       </div>
 
-      <div className="d-flex justify-content-center">
+      <h3 className="mt-3 text-center">Model Status: <span className={modelStatus === "RUNNING" ? "text-success" : "text-danger"}>{modelStatus}</span></h3>
+
+      <div className="d-flex justify-content-center mt-4">
         <video
           ref={videoRef}
           autoPlay
@@ -116,25 +190,6 @@ export default function Home() {
           className="rounded border shadow-lg"
           style={{ width: '480px', height: '360px', display: isStreaming ? 'block' : 'none' }}
         />
-      </div>
-
-      {!isStreaming && latestImagePath && (
-        <div className="mt-3">
-          <button className="btn btn-success" onClick={sendToRekognition}>
-            Generate Image
-          </button>
-        </div>
-      )}
-
-      <div className="mt-4">
-        <h2>Captured Images</h2>
-        <div className="row g-3">
-          {images.map((imgSrc, index) => (
-            <div key={index} className="col-md-3">
-              <img src={imgSrc} alt={`Captured ${index}`} className="img-fluid rounded shadow" />
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );
